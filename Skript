@@ -1,0 +1,82 @@
+# CONFIGURATION
+$servicesToCheck = @("wuauserv", "WinDefend", "Dhcp")  # Windows Update, Defender, DHCP
+$logPath = "C:\Logs\SystemHealthLog.csv"
+$emailTo = ""  # Muuda see enda e-postiks
+$emailFrom = ""
+$smtpServer = "smtp.gmail.com"  # Asenda õige SMTP serveriga
+$smtpPort = 587
+$smtpUser = "" #pane siia gmail
+$smtpPassword = ""  # pane parool
+
+# Timestamp
+$timeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+# Ensure log directory exists
+$logDir = Split-Path $logPath
+if (!(Test-Path $logDir)) {
+    New-Item -ItemType Directory -Path $logDir | Out-Null
+}
+
+# Function: Log writing
+function Write-Log {
+    param([string]$line)
+    Add-Content -Path $logPath -Value $line
+}
+
+# Function: Send alert
+function Send-Alert {
+    param([string]$subject, [string]$body)
+
+    $securePassword = ConvertTo-SecureString $smtpPassword -AsPlainText -Force
+    $cred = New-Object System.Management.Automation.PSCredential ($smtpUser, $securePassword)
+
+    Send-MailMessage -From $emailFrom -To $emailTo -Subject $subject -Body $body -SmtpServer $smtpServer -Port $smtpPort -UseSsl -Credential $cred
+}
+
+# Begin logging
+$logEntry = "$timeStamp,"
+
+### 1. Check Service Status
+$problemDetected = $false
+$problemDetails = ""
+
+foreach ($serviceName in $servicesToCheck) {
+    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($null -eq $service) {
+        $logEntry += "$serviceName:NotFound,"
+        $problemDetected = $true
+        $problemDetails += "$serviceName teenust ei leitud.`n"
+    } elseif ($service.Status -ne "Running") {
+        $logEntry += "$serviceName:Stopped,"
+        $problemDetected = $true
+        $problemDetails += "$serviceName on peatatud.`n"
+    } else {
+        $logEntry += "$serviceName:Running,"
+    }
+}
+
+### 2. System Resource Monitoring
+$cpuLoad = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
+$ramAvailable = (Get-CimInstance -ClassName Win32_OperatingSystem).FreePhysicalMemory / 1MB
+$totalRAM = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory / 1MB
+$ramUsagePercent = 100 - (($ramAvailable * 1MB) / ($totalRAM * 1MB) * 100)
+$diskSpace = Get-PSDrive -PSProvider 'FileSystem' | Where-Object {$_.Name -eq "C"}
+$diskFree = [math]::Round(($diskSpace.Free / 1GB), 2)
+
+$logEntry += "CPU:$([math]::Round($cpuLoad,2))%,RAM:$([math]::Round($ramUsagePercent,2))%,DiskFree:$diskFree GB"
+
+if ($diskFree -lt 190) {
+    $problemDetected = $true
+    $problemDetails += "C: kettal on vähem kui 190GB vaba ruumi.`n"
+}
+
+### 3. Write log entry
+if (!(Test-Path $logPath)) {
+    Write-Log "Time,Services,CPU,Memory,Disk"
+}
+Write-Log $logEntry
+
+### 4. Send alert if needed
+if ($problemDetected) {
+    Send-Alert -subject "Süsteemi probleem tuvastatud [$timeStamp]" -body $problemDetails
+}
